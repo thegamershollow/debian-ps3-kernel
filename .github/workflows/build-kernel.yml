@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+    paths:
+      - ".github/workflows/build-kernel.yml"
   workflow_dispatch:
     inputs:
       publish_release:
@@ -143,10 +145,14 @@ jobs:
           #   ARCH            — kernel architecture name (powerpc)
           #   CROSS_COMPILE   — toolchain prefix
           #   DEB_HOST_ARCH   — debian architecture for package metadata (ppc64)
+          #   DPKG_FLAGS=-d   — skip dpkg-checkbuilddeps; it looks for libssl-dev:ppc64
+          #                     on the amd64 runner which is not installed. All needed
+          #                     libs are already present via the cross-toolchain.
           make -j"$JOBS" bindeb-pkg \
             ARCH=$ARCH \
             CROSS_COMPILE=$CROSS_COMPILE \
             DEB_HOST_ARCH=$DEB_HOST_ARCH \
+            DPKG_FLAGS=-d \
             LOCALVERSION="-ppc64-custom" \
             KDEB_PKGVERSION="${KERNEL_VERSION}-1" \
             KDEB_COMPRESS=xz
