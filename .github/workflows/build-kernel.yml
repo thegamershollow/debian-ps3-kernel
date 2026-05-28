@@ -159,12 +159,14 @@ jobs:
             HOSTCC=gcc
             HOSTCXX=g++
             HOSTAR=ar
+            DPKG_FLAGS=-d
           )
 
           # Phase 1: compile kernel + modules
           make -j"$JOBS" "${COMMON_ARGS[@]}"
 
-          # Phase 2: package (single-threaded to avoid race conditions in deb scripts)
+          # Phase 2: package — bindeb-pkg builds binary debs only (no source package),
+          # which means it works fine from a tarball without a git repo present.
           make -j1 bindeb-pkg "${COMMON_ARGS[@]}" \
             KBUILD_DEBARCH=$DEB_HOST_ARCH \
             LOCALVERSION="-ppc64-custom" \
