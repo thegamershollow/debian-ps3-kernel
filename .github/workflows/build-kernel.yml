@@ -42,6 +42,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+
+          # Install native (amd64) build tools
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev libelf-dev \
             libncurses-dev dwarves pahole rsync kmod cpio \
@@ -116,22 +118,34 @@ jobs:
           if [ -f "$CUSTOM_CONFIG" ]; then
             echo "Using custom kernel config from repo."
             cp "$CUSTOM_CONFIG" .config
-            make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
           else
             echo "No custom config found — using ps3_defconfig as base."
             # ps3_defconfig targets the Sony PS3 (Cell BE, PowerPC 64-bit big-endian)
             make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE ps3_defconfig
-            # Silence module-signing prompts (no signing key available in CI)
-            ./scripts/config --disable SYSTEM_TRUSTED_KEYS
-            ./scripts/config --disable SYSTEM_REVOCATION_KEYS
-            ./scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
-            ./scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
-            make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
           fi
 
-          # Sanity-check: confirm big-endian and PPC64 are set
+          # Disable features that require libssl-dev on the target architecture.
+          # libssl-dev:ppc64 is not available in the Ubuntu repos, so the headers
+          # package would fail trying to cross-compile sign-file and certs tools.
+          # These are only needed for kernel module signing — disable them so the
+          # headers package builds cleanly without any OpenSSL dependency.
+          ./scripts/config --disable CONFIG_MODULE_SIG
+          ./scripts/config --disable CONFIG_MODULE_SIG_ALL
+          ./scripts/config --disable CONFIG_MODULE_SIG_FORCE
+          ./scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYRING
+          ./scripts/config --disable CONFIG_SYSTEM_TRUSTED_KEYS
+          ./scripts/config --disable CONFIG_SYSTEM_REVOCATION_KEYS
+          ./scripts/config --disable CONFIG_SYSTEM_REVOCATION_LIST
+          ./scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+          ./scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
+          # Also disable IMA/EVM appraisal which pulls in asymmetric key support
+          ./scripts/config --disable CONFIG_IMA_APPRAISE_MODSIG
+
+          make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+
+          # Sanity-check: confirm big-endian, PPC64, and signing disabled
           echo "--- Relevant config entries ---"
-          grep -E "CONFIG_PPC64|CONFIG_CPU_BIG_ENDIAN|CONFIG_PS3_PLATFORM" .config || true
+          grep -E "CONFIG_PPC64|CONFIG_CPU_BIG_ENDIAN|CONFIG_PS3_PLATFORM|CONFIG_MODULE_SIG|CONFIG_SYSTEM_TRUSTED" .config || true
 
       # ── 7. Build kernel + deb packages (cross-compiled) ──────────────────────
       - name: Build kernel deb packages
