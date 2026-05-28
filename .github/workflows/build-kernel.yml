@@ -141,21 +141,38 @@ jobs:
           JOBS=$(nproc)
           echo "Building with $JOBS parallel jobs..."
 
-          # bindeb-pkg cross-compilation requires:
-          #   ARCH            — kernel architecture name (powerpc)
-          #   CROSS_COMPILE   — toolchain prefix
-          #   DEB_HOST_ARCH   — debian architecture for package metadata (ppc64)
-          #   DPKG_FLAGS=-d   — skip dpkg-checkbuilddeps; it looks for libssl-dev:ppc64
-          #                     on the amd64 runner which is not installed. All needed
-          #                     libs are already present via the cross-toolchain.
-          make -j"$JOBS" bindeb-pkg \
-            ARCH=$ARCH \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            DEB_HOST_ARCH=$DEB_HOST_ARCH \
-            DPKG_FLAGS=-d \
+          # When cross-compiling, CROSS_COMPILE must NOT apply to host tools
+          # (scripts, fixdep, objtool, etc.) — those must run on the amd64 runner.
+          # Explicitly pinning HOSTCC/HOSTCXX/HOSTAR to the native gcc ensures the
+          # headers package can build its scripts directory without trying to run
+          # ppc64 binaries on an x86 host.
+          #
+          # Variables:
+          #   ARCH            — kernel arch (powerpc)
+          #   CROSS_COMPILE   — ppc64 toolchain prefix (target code only)
+          #   HOSTCC/HOSTCXX  — native compiler for host-side build tools
+          #   HOSTAR          — native ar for host-side archives
+          #   KBUILD_DEBARCH  — debian arch stamped into .deb metadata (ppc64)
+          COMMON_ARGS=(
+            ARCH=$ARCH
+            CROSS_COMPILE=$CROSS_COMPILE
+            HOSTCC=gcc
+            HOSTCXX=g++
+            HOSTAR=ar
+          )
+
+          # Phase 1: compile kernel + modules
+          make -j"$JOBS" "${COMMON_ARGS[@]}"
+
+          # Phase 2: package (single-threaded to avoid race conditions in deb scripts)
+          make -j1 deb-pkg "${COMMON_ARGS[@]}" \
+            KBUILD_DEBARCH=$DEB_HOST_ARCH \
             LOCALVERSION="-ppc64-custom" \
             KDEB_PKGVERSION="${KERNEL_VERSION}-1" \
             KDEB_COMPRESS=xz
+
+          echo "--- Packages produced ---"
+          ls -lh ../*.deb
 
       # ── 8. Collect artifacts ──────────────────────────────────────────────────
       - name: Collect .deb packages
