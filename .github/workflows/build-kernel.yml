@@ -23,7 +23,7 @@ env:
 
 jobs:
   build-kernel:
-    name: Build Kernel ${{ env.KERNEL_VERSION }} (PS3)
+    name: Build Kernel 6.12.62 (PS3)
     runs-on: ubuntu-24.04
 
     permissions:
@@ -234,7 +234,7 @@ jobs:
       - name: Upload deb packages as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-debs-${{ env.KERNEL_VERSION }}-ppc64
+          name: kernel-debs-6.12.62-ppc64
           path: release-artifacts/
           retention-days: 30
 
@@ -246,8 +246,8 @@ jobs:
            github.event.inputs.publish_release == 'true')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('kernel-{0}-ppc64-{1}', env.KERNEL_VERSION, github.run_number) }}
-          name: "Linux Kernel ${{ env.KERNEL_VERSION }} — PS3 (ppc64 BE)"
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('kernel-6.12.62-ps3-{0}', github.run_number) }}
+          name: "Linux Kernel 6.12.62 — PS3 (ppc64 BE)"
           body_path: release_notes.md
           draft: false
           prerelease: false
