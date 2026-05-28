@@ -1,0 +1,34 @@
+name: Update APT Repository
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: # allow manual trigger
+
+jobs:
+  update-apt-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: robinraju/release-downloader@v1.11
+        with:
+          latest: true
+          fileName: "*.deb"
+          out-file-path: "debs"
+
+      - name: Add packages to APT repo on gh-pages
+        uses: smeinecke/apt-repo-action@v2.1.8
+        with:
+          github_token: ${{ github.token }}
+          repo_supported_arch: |
+            powerpc64
+          repo_supported_version: |
+            sid
+          file: "debs/*.deb"
+          file_target_version: sid
+          private_key: ${{ secrets.APT_SIGNING_KEY }}
+          public_key: ${{ secrets.APT_SIGNING_PUBKEY }}
+          key_passphrase: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+          page_branch: gh-pages
+          repo_folder: repo
+          skip_duplicates: true
