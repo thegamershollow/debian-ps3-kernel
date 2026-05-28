@@ -1,0 +1,257 @@
+name: Build Linux Kernel 6.12.62 (ppc64 BE)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish as GitHub Release"
+        required: false
+        default: "true"
+        type: boolean
+
+env:
+  KERNEL_VERSION: "6.12.62"
+  KERNEL_MAJOR: "6"
+  PATCHES_DIR: "patches"       # Directory in your repo containing .patch files
+  # Cross-compilation — ppc64 big-endian
+  ARCH: powerpc
+  CROSS_COMPILE: powerpc64-linux-gnu-
+  DEB_HOST_ARCH: ppc64         # Tells dpkg-buildpackage the target architecture
+
+jobs:
+  build-kernel:
+    name: Build Kernel ${{ env.KERNEL_VERSION }} (PS3)
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write           # Required to create releases
+
+    steps:
+      # ── 1. Checkout your repo (for patch files and optional kernel config) ──
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      # ── 2. Install build dependencies + ppc64 cross-toolchain ────────────────
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            libncurses-dev dwarves pahole rsync kmod cpio \
+            debhelper dpkg-dev fakeroot \
+            wget xz-utils \
+            gcc-powerpc64-linux-gnu \
+            binutils-powerpc64-linux-gnu \
+            libc6-dev-ppc64-cross
+
+          # Confirm the cross-compiler is present and show its version
+          powerpc64-linux-gnu-gcc --version
+
+      # ── 3. Download kernel source ─────────────────────────────────────────────
+      - name: Download kernel source
+        run: |
+          KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+          echo "Downloading $KERNEL_URL"
+          wget -q --show-progress "$KERNEL_URL" -O "linux-${KERNEL_VERSION}.tar.xz"
+
+      - name: Verify kernel tarball (optional GPG)
+        run: |
+          wget -q "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.sign"
+          # Uncomment to enable full GPG verification:
+          # xz -d linux-${KERNEL_VERSION}.tar.xz
+          # gpg --locate-keys torvalds@kernel.org gregkh@kernel.org
+          # gpg --verify linux-${KERNEL_VERSION}.tar.sign linux-${KERNEL_VERSION}.tar
+          echo "Skipping GPG verification — enable above for production builds."
+
+      # ── 4. Extract kernel source ──────────────────────────────────────────────
+      - name: Extract kernel source
+        run: |
+          tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+          echo "KERNEL_DIR=$PWD/linux-${KERNEL_VERSION}" >> "$GITHUB_ENV"
+
+      # ── 5. Apply patch files ──────────────────────────────────────────────────
+      - name: Apply patches
+        run: |
+          PATCH_DIR="$GITHUB_WORKSPACE/repo/${PATCHES_DIR}"
+
+          if [ ! -d "$PATCH_DIR" ]; then
+            echo "No patches directory found at $PATCH_DIR — skipping."
+            exit 0
+          fi
+
+          PATCHES=$(find "$PATCH_DIR" -maxdepth 1 -name "*.patch" | sort)
+
+          if [ -z "$PATCHES" ]; then
+            echo "No .patch files found in $PATCH_DIR — skipping."
+            exit 0
+          fi
+
+          echo "Applying patches from $PATCH_DIR:"
+          cd "$KERNEL_DIR"
+
+          for patch in $PATCHES; do
+            echo "  → Applying: $(basename "$patch")"
+            patch -p1 --forward < "$patch" || {
+              echo "ERROR: Failed to apply patch: $patch"
+              exit 1
+            }
+          done
+
+          echo "All patches applied successfully."
+
+      # ── 6. Configure kernel for ppc64 big-endian ─────────────────────────────
+      - name: Configure kernel
+        run: |
+          cd "$KERNEL_DIR"
+
+          CUSTOM_CONFIG="$GITHUB_WORKSPACE/repo/kernel.config"
+
+          if [ -f "$CUSTOM_CONFIG" ]; then
+            echo "Using custom kernel config from repo."
+            cp "$CUSTOM_CONFIG" .config
+            make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+          else
+            echo "No custom config found — using ps3_defconfig as base."
+            # ps3_defconfig targets the Sony PS3 (Cell BE, PowerPC 64-bit big-endian)
+            make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE ps3_defconfig
+            # Silence module-signing prompts (no signing key available in CI)
+            ./scripts/config --disable SYSTEM_TRUSTED_KEYS
+            ./scripts/config --disable SYSTEM_REVOCATION_KEYS
+            ./scripts/config --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+            ./scripts/config --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
+            make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE olddefconfig
+          fi
+
+          # Sanity-check: confirm big-endian and PPC64 are set
+          echo "--- Relevant config entries ---"
+          grep -E "CONFIG_PPC64|CONFIG_CPU_BIG_ENDIAN|CONFIG_PS3_PLATFORM" .config || true
+
+      # ── 7. Build kernel + deb packages (cross-compiled) ──────────────────────
+      - name: Build kernel deb packages
+        run: |
+          cd "$KERNEL_DIR"
+
+          JOBS=$(nproc)
+          echo "Building with $JOBS parallel jobs..."
+
+          # bindeb-pkg cross-compilation requires:
+          #   ARCH            — kernel architecture name (powerpc)
+          #   CROSS_COMPILE   — toolchain prefix
+          #   DEB_HOST_ARCH   — debian architecture for package metadata (ppc64)
+          make -j"$JOBS" bindeb-pkg \
+            ARCH=$ARCH \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            DEB_HOST_ARCH=$DEB_HOST_ARCH \
+            LOCALVERSION="-ppc64-custom" \
+            KDEB_PKGVERSION="${KERNEL_VERSION}-1" \
+            KDEB_COMPRESS=xz
+
+      # ── 8. Collect artifacts ──────────────────────────────────────────────────
+      - name: Collect .deb packages
+        run: |
+          mkdir -p release-artifacts
+
+          find . -maxdepth 1 -name "*.deb"       -exec cp {} release-artifacts/ \;
+          find . -maxdepth 1 -name "*.buildinfo" -exec cp {} release-artifacts/ \;
+          find . -maxdepth 1 -name "*.changes"   -exec cp {} release-artifacts/ \;
+
+          echo "Packages built:"
+          ls -lh release-artifacts/
+
+          # Verify the packages are actually ppc64 architecture
+          echo "--- Package architecture check ---"
+          for deb in release-artifacts/*.deb; do
+            dpkg-deb --field "$deb" Package Architecture | tr '\n' ' '
+            echo ""
+          done
+
+          echo "RELEASE_DIR=$PWD/release-artifacts" >> "$GITHUB_ENV"
+
+      # ── 9. Generate release notes ─────────────────────────────────────────────
+      - name: Generate release notes
+        run: |
+          PATCH_DIR="$GITHUB_WORKSPACE/repo/${PATCHES_DIR}"
+          PATCHES_APPLIED=""
+
+          if [ -d "$PATCH_DIR" ]; then
+            PATCHES_APPLIED=$(find "$PATCH_DIR" -maxdepth 1 -name "*.patch" | sort | xargs -I{} basename {})
+          fi
+
+          cat > release_notes.md <<'EOF'
+          ## Linux Kernel KERNEL_VERSION_PLACEHOLDER — ppc64 Big-Endian Build
+
+          **Kernel version:** `KERNEL_VERSION_PLACEHOLDER-ppc64-custom`
+          **Target architecture:** `ppc64` (Cell BE — Sony PS3)
+          **Build date:** BUILD_DATE_PLACEHOLDER
+          **Builder:** GitHub Actions on `ubuntu-24.04` (x86_64 cross-compiling to ppc64)
+
+          ### Patches Applied
+          EOF
+
+          # Replace placeholders
+          sed -i "s/KERNEL_VERSION_PLACEHOLDER/${KERNEL_VERSION}/g" release_notes.md
+          sed -i "s/BUILD_DATE_PLACEHOLDER/$(date -u +'%Y-%m-%d %H:%M UTC')/g" release_notes.md
+
+          if [ -n "$PATCHES_APPLIED" ]; then
+            echo "$PATCHES_APPLIED" | while read -r p; do
+              echo "- \`$p\`" >> release_notes.md
+            done
+          else
+            echo "_No patches applied._" >> release_notes.md
+          fi
+
+          cat >> release_notes.md <<'EOF'
+
+          ### Installation (on a ppc64 big-endian Debian/Ubuntu system)
+
+          ```bash
+          # 1. Install linux-headers
+          sudo dpkg -i linux-headers-*.deb
+
+          # 2. Install the kernel image
+          sudo dpkg -i linux-image-*.deb
+
+          # 3. (Optional) Install libc-dev if present
+          sudo dpkg -i linux-libc-dev*.deb 2>/dev/null || true
+
+          # 4. Update bootloader and reboot
+          sudo update-grub
+          sudo reboot
+          ```
+
+          > **Note:** These packages were cross-compiled on x86_64.
+          > Install only on ppc64 big-endian hardware (POWER3–POWER9, etc.)
+          EOF
+
+          cat release_notes.md
+
+      # ── 10. Upload packages as workflow artifacts (always) ────────────────────
+      - name: Upload deb packages as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-debs-${{ env.KERNEL_VERSION }}-ppc64
+          path: release-artifacts/
+          retention-days: 30
+
+      # ── 11. Publish GitHub Release (on tag push or manual trigger) ────────────
+      - name: Create GitHub Release
+        if: >
+          startsWith(github.ref, 'refs/tags/') ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.publish_release == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('kernel-{0}-ppc64-{1}', env.KERNEL_VERSION, github.run_number) }}
+          name: "Linux Kernel ${{ env.KERNEL_VERSION }} — PS3 (ppc64 BE)"
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: release-artifacts/*
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
