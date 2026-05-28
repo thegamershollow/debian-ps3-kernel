@@ -165,7 +165,7 @@ jobs:
           make -j"$JOBS" "${COMMON_ARGS[@]}"
 
           # Phase 2: package (single-threaded to avoid race conditions in deb scripts)
-          make -j1 deb-pkg "${COMMON_ARGS[@]}" \
+          make -j1 bindeb-pkg "${COMMON_ARGS[@]}" \
             KBUILD_DEBARCH=$DEB_HOST_ARCH \
             LOCALVERSION="-ppc64-custom" \
             KDEB_PKGVERSION="${KERNEL_VERSION}-1" \
